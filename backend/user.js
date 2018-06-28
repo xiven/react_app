@@ -1,13 +1,8 @@
 const {Router} = require('express');
-const SHA256 = require('crypto-js/sha256');
 const pool = require('./db');
-const { APP_SECRET } = require('./secrets');
+const {hash, Session} = require('./helper');
 
 const router = new Router();
-
-const hash = str => {
-  return SHA256(`${APP_SECRET}${str}${APP_SECRET}`).toString();
-};
 
 router.get('/all', (req, res, next) => {
   pool.query('SELECT * FROM users', (q_err, q_res) => {
@@ -17,9 +12,29 @@ router.get('/all', (req, res, next) => {
   });
 });
 
+const set_session = (username, res) => {
+  const session = new Session(username);
+  const session_str = session.toString();
+
+  return new Promise((resolve, reject) => pool.query(
+    'UPDATE users SET session_id = $1 WHERE username_hash = $2',
+    [session.id, hash(username)],
+    (q_err, q_res) => {
+      if (q_err) return reject(q_err);
+
+      res.cookie('session_str', session_str, {
+        expire: Date.now() + 3600000,
+        httpOnly: true,
+        //secure: true // use with https for a secure cookie
+      });
+
+      resolve();
+    }
+  ));
+};
+
 router.post('/new', (req, res, next) => {
   const {username, password} = req.body;
-
   const username_hash = hash(username);
 
   pool.query(
@@ -35,7 +50,13 @@ router.post('/new', (req, res, next) => {
           [username_hash, hash(password)],
           (q1_err, q1_res) => {
             if (q1_err) return next(q1_err);
-            res.json({msg: 'Successfully created user!'});
+
+            set_session(username, res)
+              .then(() => {
+                res.json({msg: 'Successfully created user!'});
+              })
+              .catch(error => next(error));
+            
           }
         )
       } else {
